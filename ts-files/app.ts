@@ -1,3 +1,15 @@
+//interface for the drag and drop
+interface Draggable {
+    dragStartHandler(event:  DragEvent): void;
+    dragEndHandler(event: DragEvent): void;
+}
+
+interface DragTarget {
+    dragOverHandler(event: DragEvent): void;
+    dropHandler(evet: DragEvent): void;
+    dragLeaveHandler(event: DragEvent): void;
+}
+
 enum ProjectStatus {
     Active,
     Finished
@@ -14,14 +26,24 @@ class Project {
     ) {}
 }
 
-type Listener = (items: Project[]) => void;
+type Listener<T> = (items: T[]) => void;
+
+abstract class State<T> {
+    protected listeners: Listener<T>[] = [];
+
+    addListener(listenerFn: Listener<T>) {
+        this.listeners.push(listenerFn);
+    }
+
+}
+
 //Project State is a singleton that handles the project states
-class ProjectState {
-    private listeners: Listener[] = []
+class ProjectState extends State<Project> {
     private projects: Project[] = [];
     private static instance: ProjectState;
 
     private constructor() {
+        super()
 
     }
     static getInstance() {
@@ -32,13 +54,21 @@ class ProjectState {
         return this.instance;
     }
 
-    addListener(listenerFn: Listener) {
-        this.listeners.push(listenerFn);
+    addProject(title: string, description: string, numOfPeople: number) {
+        const newProject = new Project(Math.random().toString(), title, description, numOfPeople, ProjectStatus.Active);
+        this.projects.push(newProject);
+        this.updateListeners();
     }
 
-    addProject(title: string, description: string, numOfPeople: number) {
-        const newProject = new Project(Math.random.toString(), title, description, numOfPeople, ProjectStatus.Active);
-        this.projects.push(newProject);
+    moveProject(projectId: string, newStatus: ProjectStatus) {
+        const project = this.projects.find(prj => prj.id === projectId);
+        if (project && project.status !== newStatus) {
+            project.status = newStatus;
+            this.updateListeners();
+        }
+    }
+
+    private updateListeners() {
         for (const listenerFn of this.listeners) {
             //slice() would pass a brand new copy
             listenerFn(this.projects.slice())
@@ -88,25 +118,122 @@ function AutoBind(_target: any, _methodName: string, descriptor: PropertyDescrip
     };
     return adjDescriptor;
 }
-class ProjectList {
-    templateElement: HTMLTemplateElement;
-    hostElement: HTMLDivElement;
-    element: HTMLElement;
-    assignedProjects: Project[];
 
-    constructor(private type: "active" | "finished") {
+abstract class Component<T extends HTMLElement, U extends HTMLElement> {
+    templateElement: HTMLTemplateElement;
+    hostElement: T;
+    element: U;
+
+    constructor(templateId: string, hostElementId: string, insertAtStart: boolean, newElementId?: string) {
         // the "as" typecasting method is the same as <>
-        this.templateElement = document.getElementById("project-list")! as HTMLTemplateElement;
-        this.hostElement = document.getElementById("app")! as HTMLDivElement;
-        this.assignedProjects = []
+        this.templateElement = document.getElementById(templateId)! as HTMLTemplateElement;
+        this.hostElement = document.getElementById(hostElementId)! as T;
 
         // why do we do this? this is to make sure we only make this with the node inside the template
         const importedNode = document.importNode(
             this.templateElement.content,
             true
         );
-        this.element = importedNode.firstElementChild as HTMLElement;
-        this.element.id = `${this.type}-projects`;
+        this.element = importedNode.firstElementChild as U;
+        if (newElementId) {
+            this.element.id = newElementId;
+        }
+        this.attach(insertAtStart)
+    }
+
+    private attach(insertAtStart: boolean) {
+        this.hostElement.insertAdjacentElement(insertAtStart ? 'afterbegin' : 'beforeend', this.element)
+    }
+
+    abstract configure(): void;
+    abstract renderContent(): void;
+}
+class ProjectItem extends Component<HTMLUListElement, HTMLLIElement> implements Draggable {
+    private project: Project;
+
+    get person(){
+        if (this.project.people === 1) {
+            return '1 person';
+        } else {
+            return `${this.project.people} persons`;
+        }
+    }
+
+    constructor(hostId: string, project: Project){
+        super('single-project', hostId, false, project.id);
+        this.project = project;
+
+        this.configure()
+        this.renderContent()
+    }
+
+    @AutoBind
+    dragStartHandler(event: DragEvent): void {
+        event.dataTransfer!.setData('text/plain', this.project.id)
+        event.dataTransfer!.effectAllowed = 'move';
+    }
+
+    @AutoBind
+    dragEndHandler(_: DragEvent): void {
+        console.log('drag has ended');   
+    }
+
+    configure(): void {
+        this.element.addEventListener('dragstart', this.dragStartHandler);
+        this.element.addEventListener('dragend', this.dragEndHandler)
+    }
+
+    renderContent(): void {
+        this.element.querySelector('h2')!.textContent = this.project.title;
+        this.element.querySelector('h3')!.textContent = this.person + ' assigned';
+        this.element.querySelector('p')!.textContent = this.project.description;
+    }
+}
+class ProjectList extends Component<HTMLDivElement, HTMLElement> implements DragTarget{
+    assignedProjects: Project[];
+
+    constructor(private type: "active" | "finished") {
+        super('project-list', 'app', false, `${type}-projects` );
+        this.assignedProjects = []
+        this.configure();
+        this.renderContent();
+    }
+
+    private renderProjects() {
+        const listElement = document.getElementById(`${this.type}-projects-list`)! as HTMLUListElement;
+        listElement.innerHTML = '';
+        for (const prjItem of this.assignedProjects) {
+            new ProjectItem(this.element.querySelector('ul')!.id, prjItem);
+        }
+    }
+
+    @AutoBind
+    dragOverHandler(event: DragEvent): void {
+        if (event.dataTransfer && event.dataTransfer.types[0] === 'text/plain') {
+            event.preventDefault();
+            const list = this.element.querySelector('ul')!;
+            list.classList.add('droppable');
+        }
+    }
+
+    @AutoBind
+    dragLeaveHandler(event: DragEvent): void {
+        event.preventDefault();
+        const list = this.element.querySelector('ul')!;
+        list.classList.remove('droppable');
+    }
+
+    @AutoBind
+    dropHandler(event: DragEvent): void {
+        event.preventDefault();
+        const projectId = event.dataTransfer!.getData('text/plain');
+        projectState.moveProject(projectId, this.type === 'active' ? ProjectStatus.Active: ProjectStatus.Finished);
+    }
+
+    configure(): void {
+        this.element.addEventListener('dragover', this.dragOverHandler);
+        this.element.addEventListener('dragleave', this.dragLeaveHandler);
+        this.element.addEventListener('drop', this.dropHandler);
 
         projectState.addListener((projects: Project[]) => {
             const relevantProjects = projects.filter(prj => {
@@ -115,62 +242,46 @@ class ProjectList {
                 }
                 return prj.status === ProjectStatus.Finished;
             })
-            this.assignedProjects = projects;
+            this.assignedProjects = relevantProjects;
             this.renderProjects();
-        })
-        this.attach();
-        this.renderContent();
+        });   
     }
 
-    private renderProjects() {
-        const listElement = document.getElementById(`${this.type}-projects-list`)! as HTMLUListElement;
-        listElement.innerHTML = '';
-        for (const prjItem of this.assignedProjects) {
-            const listItem = document.createElement('li');
-            listItem.textContent = prjItem.title;
-            listElement.appendChild(listItem);
-        }
-    }
-
-    private renderContent() {
+    renderContent() {
         const listId = `${this.type}-projects-list`;
         this.element.querySelector('ul')!.id = listId;
         this.element.querySelector('h2')!.textContent = this.type.toUpperCase() + " PROJECTS";
     }
-
-    private attach() {
-        this.hostElement.insertAdjacentElement('beforeend', this.element)
-    }
 }
 
-class ProjectInput {
-    templateElement: HTMLTemplateElement;
-    hostElement: HTMLDivElement;
-    formElement: HTMLFormElement;
+class ProjectInput extends Component<HTMLDivElement, HTMLFormElement> {
     titleInputElement: HTMLInputElement;
     descriptionInputElement: HTMLInputElement;
     peopleInputElement: HTMLInputElement;
 
     constructor() {
-        this.templateElement = <HTMLTemplateElement>document.getElementById("project-input")!;
-        this.hostElement = <HTMLDivElement>document.getElementById("app")!;
+        super('project-input', 'app', true, 'user-input')
 
-        // the below code is a way to do a pointer
-        const importedNode = document.importNode(this.templateElement.content, true);
-        this.formElement = importedNode.firstElementChild as HTMLFormElement;
-
-        this.titleInputElement = this.formElement.querySelector("#title") as HTMLInputElement;
-        this.descriptionInputElement = this.formElement.querySelector("#description") as HTMLInputElement;
-        this.peopleInputElement = this.formElement.querySelector("#people") as HTMLInputElement;
+        this.titleInputElement = this.element.querySelector("#title") as HTMLInputElement;
+        this.descriptionInputElement = this.element.querySelector("#description") as HTMLInputElement;
+        this.peopleInputElement = this.element.querySelector("#people") as HTMLInputElement;
         
         this.configure();
-        this.attach();
     }
+    
+    renderContent(): void {}
+
+    // the bind determins how this should be treated
+    configure() {
+        this.element.addEventListener('submit', this.submitEventHandler)
+    }
+
     private clearInput() {
         this.titleInputElement.value = "";
         this.descriptionInputElement.value = "";
         this.peopleInputElement.value = "";
     }
+
     // we are declaring that we are returning a tuple
     private gatherUserInput(): [string, string, number] | void {
         const enteredTitle = this.titleInputElement.value;
@@ -216,15 +327,6 @@ class ProjectInput {
             projectState.addProject(title, description, people);
             this.clearInput();
         }
-    }
-
-    // the bind determins how this should be treated
-    private configure() {
-        this.formElement.addEventListener('submit', this.submitEventHandler)
-    }
-
-    private attach() {
-        this.hostElement.insertAdjacentElement('afterbegin', this.formElement)
     }
 }
 
