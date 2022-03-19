@@ -1,4 +1,4 @@
-import { Project, ProjectStatus } from "../models/project"; '../models/projects.js';
+import { Project, ProjectStatus } from "../models/project"; '../models/projects';
 type Listener<T> = (items: T[]) => void;
 
 abstract class State<T> {
